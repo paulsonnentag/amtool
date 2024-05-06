@@ -7,7 +7,7 @@ it's currently hardwired to talk to `wss://sync.automerge.org`, tho you can over
 ## examples of things you can do with it
 
 ```sh
-# mirror a string at a path in an Automerge document to raw file contents
+# mirror a string at a path in an Automerge document to n file contents
 amtool cp -wr automerge:2Nn5c23EuinsRJ7duZ9ATb1rZTQJ/content doc.md
 
 # mirror the other way around
@@ -15,6 +15,9 @@ amtool cp -wr doc.md automerge:2Nn5c23EuinsRJ7duZ9ATb1rZTQJ/content
 
 # mirror a value in Automerge to JSON in a file
 amtool cp -w automerge:2Nn5c23EuinsRJ7duZ9ATb1rZTQJ doc.json
+
+# mirror an Automerge file system to disk
+amtool cp -wf automerge:WL55H9f3cw91kvAoSNXMCL7ip6i/files ./assets
 
 # stream some values into Automerge
 while true; do

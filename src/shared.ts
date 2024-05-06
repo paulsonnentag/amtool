@@ -1,6 +1,8 @@
 import { AutomergeUrl, Repo } from "@automerge/automerge-repo";
 import { BrowserWebSocketClientAdapter } from "@automerge/automerge-repo-network-websocket";
 import fsP from "node:fs/promises"
+import fs from "node:fs";
+import { ensureDirSync } from "fs-extra";
 
 // ----
 // REPO
@@ -11,22 +13,33 @@ export function getRepo(): Repo {
   if (repo === null) {
     repo = new Repo({
       network: [
-        new BrowserWebSocketClientAdapter(process.env.AM_REPO || "wss://sync.automerge.org"),
+        new BrowserWebSocketClientAdapter(
+          process.env.AM_REPO || "wss://sync.automerge.org"
+        ),
       ],
     });
   }
   return repo;
 }
 
-
 // ---------
 // LOCATIONS
 // ---------
 
 export type Location = LocationAutomerge | LocationFile | LocationPipe;
-export type LocationAutomerge = { type: "automerge", docUrl: AutomergeUrl, path: string[] };
-export type LocationFile = { type: "file", path: string };
-export type LocationPipe = { type: "pipe" };  // can mean stdin or stdout, depending on position
+export type LocationAutomerge = {
+  type: "automerge";
+  docUrl: AutomergeUrl;
+  path: string[];
+};
+export type LocationFile = { type: "file"; path: string };
+export type LocationPipe = { type: "pipe" }; // can mean stdin or stdout, depending on position
+export type AMFSFile = { contentType: string; contents: string | Uint8Array };
+export type AMFSDirectory = {
+  [name: string]: AMFSDirectory | AMFSFile;
+};
+
+export type ValueType = "fs" | "raw" | "json";
 
 export function parseLocation(s: string): Location {
   if (s === "-") {
@@ -65,7 +78,6 @@ export function setAtPath(doc: unknown, path: string[], value: unknown) {
   doclet[path[path.length - 1]] = value;
 }
 
-
 // AM -> FS, not raw
 //   AM path can lead to any value, write it out as JSON
 //   writeToLocation gets FS, a value, raw = false
@@ -88,22 +100,44 @@ export function setAtPath(doc: unknown, path: string[], value: unknown) {
 
 function replacer(key: string, value: any) {
   if (value instanceof Uint8Array) {
-    return Buffer.from(value).toString('base64');
+    return Buffer.from(value).toString("base64");
   } else {
     return value;
   }
 }
 
-export async function writeToLocation(dst: Location, val: unknown, raw: boolean) {
-  if (dst.type === "file" || dst.type === "pipe") {
+export async function writeToLocation(
+  dst: Location,
+  val: unknown,
+  type: ValueType
+) {
+  if (type === "fs") {
+    if (dst.type !== "file") {
+      throw new AMTError(`value type "fs" can be only written to file system`);
+    }
+
+    if (!isAMFS(val)) {
+      throw new AMTError(
+        "value must be an automerge file object to copy in fs mode"
+      );
+    }
+
+    writeAMFS(val, dst.path);
+  } else if (dst.type === "file" || dst.type === "pipe") {
     let stringVal: string | Uint8Array;
-    if (!raw) {
-      stringVal = JSON.stringify(val, replacer, dst.type === "pipe" ? undefined : 2) + "\n";
-    } else if (typeof val !== "string" && !(val instanceof Uint8Array)) {
-      throw new AMTError("value must be a string or bytes to copy in raw mode");
-      // throw new AMTError(`value at ${stringifyLocation(src)} is not a string`);
-    } else {
+
+    if (type === "raw") {
+      if (typeof val !== "string" && !(val instanceof Uint8Array)) {
+        throw new AMTError(
+          "value must be a string or bytes to copy in raw mode"
+        );
+        // throw new AMTError(`value at ${stringifyLocation(src)} is not a string`);
+      }
       stringVal = val;
+    } else {
+      stringVal =
+        JSON.stringify(val, replacer, dst.type === "pipe" ? undefined : 2) +
+        "\n";
     }
 
     if (dst.type === "pipe") {
@@ -119,7 +153,9 @@ export async function writeToLocation(dst: Location, val: unknown, raw: boolean)
       if (dst.path.length === 0) {
         // TODO: special case for no path?
         if (!(typeof val === "object" && val !== null)) {
-          throw new AMTError("only an object can be written to a document root");
+          throw new AMTError(
+            "only an object can be written to a document root"
+          );
         }
         for (const key in val) {
           doc[key] = (val as any)[key];
@@ -133,6 +169,40 @@ export async function writeToLocation(dst: Location, val: unknown, raw: boolean)
       }
     });
   }
+}
+
+function writeAMFS(directoryOrFile: AMFSDirectory | AMFSFile, path: string) {
+  if (isAMFSFile(directoryOrFile)) {
+    const contents = directoryOrFile.contents;
+    fs.writeFileSync(path, contents);
+  } else {
+    ensureDirSync(path);
+
+    Object.entries(directoryOrFile).forEach(([name, node]) => {
+      writeAMFS(node, `${path}/${name}`);
+    });
+  }
+}
+
+function isAMFS(node: unknown): node is AMFSFile | AMFSDirectory {
+  return isAMFSFile(node) || isAMFSDirectory(node);
+}
+
+function isAMFSFile(node: unknown): node is AMFSFile {
+  return (
+    !!node &&
+    typeof node === "object" &&
+    "contentType" in node &&
+    "contents" in node &&
+    typeof node.contentType === "string" &&
+    (typeof node.contents === "string" || node.contents instanceof Uint8Array)
+  );
+}
+
+function isAMFSDirectory(node: unknown): node is AMFSDirectory {
+  return (
+    !!node && typeof node === "object" && Object.values(node).every(isAMFS)
+  );
 }
 
 
